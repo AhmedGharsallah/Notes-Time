@@ -1,4 +1,4 @@
-# Python Note-Taking App
+# Notes-Time
 
 ## Overview
 A comprehensive note-taking application developed in Python, designed to serve as an efficient alternative to Notion. This app allows users to manage their notes seamlessly and offers various features to enhance productivity.
