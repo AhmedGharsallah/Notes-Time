@@ -5,11 +5,13 @@ import os
 import json
 import webbrowser
 
+
 class NotesTime:
     def __init__(self, root):
         self.root = root
         self.root.title("Note Time")
-        self.root.geometry("1100x800")
+        self.root.geometry("700x700")
+        self.root.resizable(False, False)
         
         self.db_path = os.path.join(os.getcwd(), "MyNotes_Data")
         if not os.path.exists(self.db_path):
@@ -23,6 +25,9 @@ class NotesTime:
         self.dragging_image = None
         self.mouse_offset_x = 0
         self.mouse_offset_y = 0
+
+        # ── NEW: Auto-Save Timer State ──
+        self.autosave_timer = None
 
         # Theme states
         self.current_theme = "dark"
@@ -65,7 +70,6 @@ class NotesTime:
         btns = [
             ("📁 +Folder", self.add_folder),
             ("📄 +Note", self.add_note),
-            ("💾 SAVE", self.save_note),
             ("🖼 +Image", self.insert_image),
             ("✅ Task", self.add_checkbox),
             ("🔗 +Link", self.add_web_link),
@@ -77,6 +81,11 @@ class NotesTime:
             b = tk.Button(self.toolbar, text=text, command=cmd, takefocus=0, relief="flat", padx=10)
             b.pack(side="left", padx=2, pady=5)
             self.toolbar_btns.append(b)
+
+        # ── NEW: Always on Top Button ──
+        self.top_btn = tk.Button(self.toolbar, text="📌 Float: OFF", command=self.toggle_top, takefocus=0, relief="flat", padx=10)
+        self.top_btn.pack(side="left", padx=2, pady=5)
+        self.toolbar_btns.append(self.top_btn)
 
         self.theme_btn = tk.Button(self.toolbar, text="🌙 Dark Mode", command=self.toggle_theme, takefocus=0, relief="flat", padx=10)
         self.theme_btn.pack(side="right", padx=5, pady=5)
@@ -119,10 +128,13 @@ class NotesTime:
         self.active_image_label = None
 
         # General bindings
-        self.editor.bind("<ButtonRelease-1>", self.show_quick_menu)
+        self.editor.bind("<Button-3>", self.show_quick_menu)
         self.editor.bind("<Button-1>", self.hide_quick_menu, add="+")
         self.editor.bind("<Key>", self.hide_quick_menu, add="+")
         self.editor.bind("<Button-1>", self.on_editor_click, add="+")
+
+        # ── Bind KeyRelease for the Smart Auto-Save ──
+        self.editor.bind("<KeyRelease>", self.reset_autosave_timer, add="+")
 
         # ── SCROLL BINDINGS: reposition images whenever the viewport moves ──
         self.editor.bind("<MouseWheel>",
@@ -164,19 +176,37 @@ class NotesTime:
 
     # --- KEYBOARD SHORTCUTS ---
     def setup_shortcuts(self):
-        self.root.bind("<Control-s>", lambda e: self.save_note())
-        self.root.bind("<Control-S>", lambda e: self.save_note())
+        self.root.bind("<Control-s>", lambda e: self.save_note(e))
+        self.root.bind("<Control-S>", lambda e: self.save_note(e))
 
         self.root.bind("<Control-a>", lambda e: self.editor.tag_add("sel", "1.0", "end"))
         self.root.bind("<Control-A>", lambda e: self.editor.tag_add("sel", "1.0", "end"))
 
-        self.root.bind("<Control-t>", self.add_checkbox)
-        self.root.bind("<Control-T>", self.add_checkbox)
+        # Check box
+        self.root.bind("<Control-t>", lambda e: self.add_checkbox(e))
+        self.root.bind("<Control-T>", lambda e: self.add_checkbox(e))
+
+        # Bold text
+        self.root.bind("<Control-b>", lambda e: self.toggle_tag("bold"))
+        self.root.bind("<Control-B>", lambda e: self.toggle_tag("bold"))
+
+        # Under line
+        self.root.bind("<Control-u>", lambda e: self.toggle_tag("underline"))
+        self.root.bind("<Control-U>", lambda e: self.toggle_tag("underline"))
 
         self.editor.bind("<Control-BackSpace>", self.delete_word)
 
     def delete_word(self, event):
-        self.editor.delete("insert -1c wordstart", "insert")
+        try:
+            if self.editor.tag_ranges("sel"):
+                self.editor.delete("sel.first", "sel.last")
+            else:
+                start_index = self.editor.index("insert -1c wordstart")
+                cursor_index = self.editor.index("insert")
+                self.editor.delete(start_index, cursor_index)
+
+        except tk.TclError:
+            pass
         return "break"
 
     # --- CHECKBOX ---
@@ -202,8 +232,13 @@ class NotesTime:
 
     # --- POPUP MENUS ---
     def show_quick_menu(self, event):
-        if self.editor.tag_ranges(tk.SEL):
-            self.quick_menu.post(event.x_root + 10, event.y_root + 10)
+        try:
+            if self.editor.tag_ranges("sel"):
+                self.quick_menu.post(event.x_root + 10, event.y_root + 10)
+        except Exception:
+            pass
+
+        return "break"
 
     def hide_quick_menu(self, event):
         self.quick_menu.unpost()
@@ -224,6 +259,8 @@ class NotesTime:
                 if t.startswith("size_"):
                     self.editor.tag_remove(t, tk.SEL_FIRST, tk.SEL_LAST)
             self.editor.tag_add(new_tag, tk.SEL_FIRST, tk.SEL_LAST)
+            self.reset_autosave_timer(None)
+
         except tk.TclError:
             pass
 
@@ -428,8 +465,8 @@ class NotesTime:
         self.dragging_image = None
 
     # ── SAVE & LOAD ─────────────────────────────────────────────────────────
-    def save_note(self):
-        if not self.current_file: return
+    def save_note(self, event=None):
+        if not self.current_file: return "break"
 
         content_dump  = self.editor.dump("1.0", tk.END, text=True, tag=True)
         placed_images = []
@@ -466,7 +503,10 @@ class NotesTime:
             if tag.startswith("color_"):
                 custom_colors[tag] = self.editor.tag_cget(tag, "foreground")
             elif tag.startswith("size_"):
-                custom_sizes[tag]  = int(tag.split("_")[1])
+                try:
+                    custom_sizes[tag]  = int(tag.split("_")[1])
+                except IndexError:
+                    pass
 
         package = {
             "dump":   content_dump,
@@ -479,6 +519,8 @@ class NotesTime:
         with open(self.current_file, 'w') as f:
             json.dump(package, f)
         self.root.title(f"Nexus Notes - Saved: {os.path.basename(self.current_file)}")
+
+        return "break"
 
     def load_note(self, event):
         item = self.tree.selection()
@@ -538,6 +580,33 @@ class NotesTime:
         # Wait for the layout to settle, then sync image positions
         self.root.after(50, self._reposition_images)
 
+    # ── ALWAYS ON TOP TOGGLE ───────────────────────────────────────────
+    def toggle_top(self):
+        is_top = self.root.attributes('-topmost')
+        self.root.attributes('-topmost', not is_top)
+        
+        if not is_top:
+            self.top_btn.config(text="📌 Float: ON", relief="sunken")
+        else:
+            self.top_btn.config(text="📌 Float: OFF", relief="flat")
+
+    # ── DEBOUNCED AUTO SAVE ────────────────────────────────────────────
+    def reset_autosave_timer(self, event):
+        if not self.current_file:
+            return
+            
+        if self.autosave_timer:
+            self.root.after_cancel(self.autosave_timer)
+            
+        self.root.title(f"Nexus Notes - {os.path.basename(self.current_file)} (Typing...)")
+        
+        # Start a new timer for 2500 milliseconds (2.5 seconds)
+        self.autosave_timer = self.root.after(2500, self.auto_save_trigger)
+        
+    def auto_save_trigger(self):
+        self.save_note()
+        self.autosave_timer = None
+
     # --- UTILS ---
     def toggle_tag(self, tag):
         try:
@@ -545,6 +614,8 @@ class NotesTime:
                 self.editor.tag_remove(tag, tk.SEL_FIRST, tk.SEL_LAST)
             else:
                 self.editor.tag_add(tag, tk.SEL_FIRST, tk.SEL_LAST)
+
+            self.reset_autosave_timer(None)
         except: pass
 
     def choose_color(self):
@@ -553,6 +624,7 @@ class NotesTime:
             tag = f"color_{color}"
             self.editor.tag_configure(tag, foreground=color)
             self.toggle_tag(tag)
+            self.reset_autosave_timer(None)
 
     def add_folder(self):
         name = filedialog.asksaveasfilename(initialdir=self.db_path)
@@ -564,19 +636,21 @@ class NotesTime:
             with open(path, 'w') as f: json.dump({}, f)
             self.refresh_sidebar()
 
+    # --- RECURSIVE SIDEBAR FIX ---
     def refresh_sidebar(self):
         self.tree.delete(*self.tree.get_children())
-        for item in sorted(os.listdir(self.db_path)):
-            abs_p = os.path.join(self.db_path, item)
-            node  = self.tree.insert("", "end", text=item, values=(abs_p,))
-            if os.path.isdir(abs_p):
-                for s in sorted(os.listdir(abs_p)):
-                    self.tree.insert(node, "end", text=s, values=(os.path.join(abs_p, s),))
+        self._populate_tree("", self.db_path)
+
+    def _populate_tree(self, parent, path):
+        for item in sorted(os.listdir(path)):
+            abs_path = os.path.join(path, item)
+            node = self.tree.insert(parent, "end", text=item, values=(abs_path,))
+            if os.path.isdir(abs_path):
+                self._populate_tree(node, abs_path)
 
 if __name__ == "__main__":
     root = tk.Tk()
     app  = NotesTime(root)
     root.mainloop()
-
 #to change the file from .py to .exe
 #pyinstaller --noconsole --onefile --name "Notes-Time" main.py
