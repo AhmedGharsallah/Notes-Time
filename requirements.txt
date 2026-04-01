@@ -1,2 +1,9 @@
+# Notes-Time — Python Dependencies
+# Install with: pip install -r requirements.txt
+
+# Image processing (loading, resizing, rendering PNG/JPG inside Tkinter)
 Pillow>=10.0.0
-pyinstaller>=5.13.0
+
+# Build tool — compiles main.py into a standalone Windows .exe
+# Usage: pyinstaller --noconsole --onefile --name "Notes-Time" main.py
+pyinstaller>=6.0.0
