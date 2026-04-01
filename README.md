@@ -40,7 +40,7 @@ A lightweight, offline-first desktop note-taking application built with Python a
 ### 1. Clone or download the project
 
 ```bash
-git clone https://github.com/your-username/notes-time.git
+git clone https://github.com/AhmedGharsallah/Notes-Time
 cd notes-time
 ```
 
